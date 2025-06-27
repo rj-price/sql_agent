@@ -19,7 +19,7 @@ graph TD
         F["LLM: Review & Correct Failed Query"]
     end
 
-    subgraph "Result Interpretation & Finish"
+    subgraph "Result Interpretation"
         G["Raw Result"]
         H["LLM: Interpret SQL Result"]
         I[/"Final Answer"/]
@@ -30,7 +30,7 @@ graph TD
     B -- SQL Query --> E
     E -- Success --> G
     E -- Failure --> F
-    F -- Corrected SQL Query --> B
+    F -- Corrected SQL Query --> E
     G --> H
     H --> I
 ```
