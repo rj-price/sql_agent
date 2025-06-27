@@ -40,6 +40,13 @@ class SQLReview:
     review_text: str
     corrected_query: Optional[str] = None
 
+@dataclass
+class AgentResponse:
+    """Structure to hold the final response from the agent"""
+    natural_language_answer: str
+    query_result: QueryResult
+    review: Optional[SQLReview] = None
+
 class NaturalLanguageToSQL:
     """Main class for natural language to SQL conversion and execution"""
     
@@ -294,8 +301,8 @@ Natural Language Response:
         except Exception as e:
             logger.error(f"Error generating natural language response: {e}")
             return f"I found {len(query_result.data)} results, but encountered an error formatting the response."
-    
-    def ask_question(self, question: str) -> str:
+
+    def ask_question(self, question: str) -> AgentResponse:
         """Main method to process natural language questions"""
         
         if self.debug:
@@ -310,7 +317,7 @@ Natural Language Response:
             initial_query_result = self._execute_sql_query(sql_query)
             
             final_query_result = initial_query_result
-            review_text_for_response = None
+            review_result_for_response = None
             
             # Step 3: Check for execution errors and conditionally review/re-execute
             if not initial_query_result.success:
@@ -318,7 +325,7 @@ Natural Language Response:
                 
                 # Review the failed SQL query
                 review_result = self._review_sql_query(sql_query)
-                review_text_for_response = review_result.review_text # Store review text for final response
+                review_result_for_response = review_result # Store review object for final response
                 
                 if review_result.corrected_query:
                     if self.debug:
@@ -333,21 +340,31 @@ Natural Language Response:
                         print("\n⚠️ DEBUG - Initial query failed, but no corrected query was provided by the reviewer.")
             
             # Step 4: Generate natural language response using the final query result
-            response = self._format_natural_language_response(
-                question, final_query_result, review_text_for_response
+            response_text = self._format_natural_language_response(
+                question, final_query_result, review_result_for_response.review_text if review_result_for_response else None
+            )
+
+            agent_response = AgentResponse(
+                natural_language_answer=response_text,
+                query_result=final_query_result,
+                review=review_result_for_response
             )
 
             if self.debug:
                 print(f"\n💬 Final Response:")
-                print(f"   {response}")
+                print(f"   {agent_response.natural_language_answer}")
                 print(f"\n" + "="*50)
             
-            return response
+            return agent_response
             
         except Exception as e:
             error_msg = f"Error processing question: {e}"
             logger.error(error_msg)
-            return error_msg
+            return AgentResponse(
+                natural_language_answer=error_msg,
+                query_result=QueryResult(sql_query="", data=[], column_names=[], success=False, error_message=str(e)),
+                review=None
+            )
     
     def close_connection(self):
         """Close database connection"""
@@ -408,8 +425,8 @@ def main():
                 continue
             
             # Process the question
-            response = nl_to_sql.ask_question(question)
-            print(f"\n🤖 Answer: {response}")
+            response_obj = nl_to_sql.ask_question(question)
+            print(f"\n🤖 Answer: {response_obj.natural_language_answer}")
         
     except Exception as e:
         print(f"Error initializing system: {e}")
