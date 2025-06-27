@@ -2,6 +2,39 @@
 
 An intelligent agent that translates natural language questions into SQL queries, executes them against a MySQL database, and provides human-readable answers. It also includes a self-correction mechanism for SQL queries and a user-friendly Streamlit interface.
 
+```mermaid
+graph TD
+    subgraph "Start"
+        A[/"User Query"/]
+    end
+
+    subgraph "Query Generation"
+        B["LLM: Generate SQL Query"]
+        C[(SQL Database)]
+        D["Database Schema"]
+    end
+
+    subgraph "Execution & Validation"
+        E{"Execute SQL Query"}
+        F["LLM: Review & Correct Failed Query"]
+    end
+
+    subgraph "Result Interpretation & Finish"
+        G["Raw Result"]
+        H["LLM: Interpret SQL Result"]
+        I[/"Final Answer"/]
+    end
+
+    A --> B
+    C --> D --> B
+    B -- SQL Query --> E
+    E -- Success --> G
+    E -- Failure --> F
+    F -- Corrected SQL Query --> B
+    G --> H
+    H --> I
+```
+
 ## Features
 
 - **Natural Language to SQL Conversion**: Converts plain English questions into valid SQL queries using the Gemini 2.5 Flash model.
