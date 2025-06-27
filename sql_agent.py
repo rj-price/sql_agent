@@ -34,6 +34,12 @@ class QueryResult:
     success: bool
     error_message: Optional[str] = None
 
+@dataclass
+class SQLReview:
+    """Structure to hold SQL review results"""
+    review_text: str
+    corrected_query: Optional[str] = None
+
 class NaturalLanguageToSQL:
     """Main class for natural language to SQL conversion and execution"""
     
@@ -44,7 +50,7 @@ class NaturalLanguageToSQL:
         
         # Configure Gemini API
         genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash-lite')
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Connect to database
         self._connect_to_database()
@@ -188,7 +194,62 @@ SQL Query:
         finally:
             cursor.close()
     
-    def _format_natural_language_response(self, question: str, query_result: QueryResult) -> str:
+    def _review_sql_query(self, sql_query: str) -> SQLReview:
+        """
+        Critically evaluates an SQL query and provides a corrected version if necessary.
+        """
+        review_prompt = f"""
+You are a meticulous reviewer of SQL code. Critically evaluate the following SQL query for correctness, performance, and clarity.
+
+SQL Query to Review:
+```sql
+{sql_query}
+```
+
+Instructions:
+1.  Identify inefficiencies, bad practices, and logical errors.
+2.  Provide suggestions to improve the query's performance and readability.
+3.  If the query can be improved, provide a corrected version of the SQL query.
+4.  Format your response as a JSON object with two keys: "review" (a string containing your analysis) and "corrected_query" (a string containing the improved SQL query, or null if no changes are needed).
+
+Your JSON Response:
+"""
+        try:
+            logger.info("Sending SQL query for review to Gemini...")
+            response = self.model.generate_content(review_prompt)
+            
+            # Clean up and parse JSON
+            response_text = response.text.strip()
+            if response_text.startswith('```json'):
+                response_text = response_text[7:]
+            if response_text.endswith('```'):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            review_data = json.loads(response_text)
+            
+            review = SQLReview(
+                review_text=review_data.get("review", "No review text provided."),
+                corrected_query=review_data.get("corrected_query")
+            )
+
+            if self.debug:
+                print("\n📝 DEBUG - SQL Review:")
+                print(f"   Review: {review.review_text}")
+                if review.corrected_query:
+                    print(f"   Corrected Query: {review.corrected_query}")
+
+            return review
+
+        except (Exception, json.JSONDecodeError) as e:
+            logger.error(f"Error reviewing SQL query with Gemini: {e}")
+            # Fallback in case of error
+            return SQLReview(
+                review_text=f"Error: Could not review SQL query due to an internal error: {e}",
+                corrected_query=None
+            )
+
+    def _format_natural_language_response(self, question: str, query_result: QueryResult, review_text: Optional[str] = None) -> str:
         """Generate natural language response from query results using Gemini"""
         
         if not query_result.success:
@@ -205,19 +266,23 @@ SQL Query:
             "has_more_data": len(query_result.data) > 10
         }
         
+        review_info = ""
+        if review_text and "Error:" not in review_text:
+            review_info = f"SQL Query Review:\n{review_text}\n\n"
+
         prompt = f"""
 You are a helpful assistant that explains database query results in natural language.
 
 Original Question: {question}
 SQL Query Used: {query_result.sql_query}
-Query Results Summary: {json.dumps(data_summary, indent=2, default=str)}
+{review_info}Query Results Summary: {json.dumps(data_summary, indent=2, default=str)}
 
 Instructions:
 1. Provide a clear, conversational answer to the original question
 2. Include specific numbers and details from the results
 3. If there are many results, summarize the key findings
 4. Make the response easy to understand for non-technical users
-5. Don't mention SQL or technical database terms unless necessary
+5. Don't mention SQL or technical database terms unless necessary, but you can mention the review if it's relevant to the answer.
 
 Natural Language Response:
 """
@@ -238,15 +303,40 @@ Natural Language Response:
             print(f"⏰ Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         try:
-            # Step 1: Generate SQL query
+            # Step 1: Generate initial SQL query
             sql_query = self._generate_sql_query(question)
             
-            # Step 2: Execute SQL query
-            query_result = self._execute_sql_query(sql_query)
+            # Step 2: Attempt to execute the initial SQL query
+            initial_query_result = self._execute_sql_query(sql_query)
             
-            # Step 3: Generate natural language response
-            response = self._format_natural_language_response(question, query_result)
+            final_query_result = initial_query_result
+            review_text_for_response = None
             
+            # Step 3: Check for execution errors and conditionally review/re-execute
+            if not initial_query_result.success:
+                logger.warning(f"Initial SQL query failed: {initial_query_result.error_message}. Attempting review and correction.")
+                
+                # Review the failed SQL query
+                review_result = self._review_sql_query(sql_query)
+                review_text_for_response = review_result.review_text # Store review text for final response
+                
+                if review_result.corrected_query:
+                    if self.debug:
+                        print("\n🔄 DEBUG - Initial query failed. Using corrected SQL query for re-execution.")
+                    # Re-execute with the corrected query
+                    final_query_result = self._execute_sql_query(review_result.corrected_query)
+                    
+                    if not final_query_result.success:
+                        logger.error(f"Corrected SQL query also failed: {final_query_result.error_message}")
+                else:
+                    if self.debug:
+                        print("\n⚠️ DEBUG - Initial query failed, but no corrected query was provided by the reviewer.")
+            
+            # Step 4: Generate natural language response using the final query result
+            response = self._format_natural_language_response(
+                question, final_query_result, review_text_for_response
+            )
+
             if self.debug:
                 print(f"\n💬 Final Response:")
                 print(f"   {response}")
