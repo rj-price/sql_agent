@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 
@@ -9,6 +9,14 @@ function App() {
   const [response, setResponse] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [schema, setSchema] = useState('');
+  const [showSchema, setShowSchema] = useState(false);
+
+  useEffect(() => {
+    axios.get(`${API_URL}/schema`)
+      .then(res => setSchema(res.data.schema))
+      .catch(err => console.error('Failed to load schema', err));
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -50,6 +58,20 @@ function App() {
           {loading ? 'Thinking...' : 'Ask'}
         </button>
       </form>
+
+      <button 
+        onClick={() => setShowSchema(!showSchema)}
+        style={{ marginBottom: '20px', padding: '8px 16px', cursor: 'pointer' }}
+      >
+        {showSchema ? 'Hide' : 'Show'} Database Schema
+      </button>
+
+      {showSchema && (
+        <div style={{ background: '#f9f9f9', padding: '15px', borderRadius: '5px', marginBottom: '20px', maxHeight: '300px', overflow: 'auto' }}>
+          <h3>Database Schema</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{schema}</pre>
+        </div>
+      )}
 
       {error && <div style={{ color: 'red', marginBottom: '20px' }}>{error}</div>}
 

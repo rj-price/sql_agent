@@ -29,3 +29,10 @@ async def ask_question(request: QuestionRequest):
 @router.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+@router.get("/schema")
+async def get_schema():
+    try:
+        return {"schema": agent.schema_info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
