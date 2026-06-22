@@ -1,116 +1,129 @@
-# AI SQL Agent
+# SQL Agent
 
-An intelligent agent that translates natural language questions into SQL queries, executes them against a MySQL database, and provides human-readable answers. It also includes a self-correction mechanism for SQL queries and a user-friendly Streamlit interface.
+A full-stack web application that translates natural language questions into SQL queries, executes them against a MySQL database, and returns human-readable answers. Includes a self-correction loop: if the initial query fails, the LLM reviews and rewrites it before trying again.
 
-```mermaid
-graph TD
-    subgraph "Start"
-        A[/"User Query"/]
-    end
+## Architecture
 
-    subgraph "Query Generation"
-        B["LLM: Generate SQL Query"]
-        C[(SQL Database)]
-        D["Database Schema"]
-    end
+| Layer | Technology |
+| :--- | :--- |
+| Frontend | React + Vite |
+| Backend | FastAPI (Python) |
+| Database | MySQL 8 |
+| LLM | Google Gemini 2.5 Flash |
 
-    subgraph "Execution & Validation"
-        E{"Execute SQL Query"}
-        F["LLM: Review & Correct Failed Query"]
-    end
-
-    subgraph "Result Interpretation"
-        G["Raw Result"]
-        H["LLM: Interpret SQL Result"]
-        I[/"Final Answer"/]
-    end
-
-    A --> B
-    C --> D --> B
-    B -- SQL Query --> E
-    E -- Success --> G
-    E -- Failure --> F
-    F -- Corrected SQL Query --> E
-    G --> H
-    H --> I
+```
+┌───────────────┐       ┌─────────────────┐       ┌──────────┐
+│  React        │──────▶│  FastAPI        │──────▶│  MySQL   │
+│  :5174        │◀──────│  :8002          │◀──────│  :3306   │
+└───────────────┘  HTTP └─────────────────┘  SQL  └──────────┘
+                                │
+                                │ Gemini API
+                                ▼
+                     Google Gemini 2.5 Flash
 ```
 
-## Features
+## How It Works
 
-- **Natural Language to SQL Conversion**: Converts plain English questions into valid SQL queries using the Gemini 2.5 Flash model.
-- **Dynamic Schema Awareness**: Automatically extracts and utilises the database schema (tables, columns, and sample data) to generate accurate SQL.
-- **SQL Query Review and Correction**: If an initial SQL query fails during execution, the agent sends the query to Gemini for critical evaluation, identifying errors, inefficiencies, and suggesting a corrected version.
-- **Conditional Review**: The SQL review process is only triggered when an execution error occurs, optimising API calls.
-- **SQL Execution**: Executes the generated (or corrected) SQL queries against a MySQL database.
-- **Natural Language Response Generation**: Formats query results into clear, conversational answers for non-technical users.
-- **Streamlit Web Interface**: Provides an intuitive web dashboard for users to ask questions and view the answer, the executed SQL query and its results, and detailed SQL review information (if applicable).
-
-## Setup and Installation
-
-Follow these steps to get the SQL Agent up and running on your local machine.
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/rj-price/sql_agent.git
-cd sql_agent
-```
-
-### 2. Set Up Environment Variables
-
-Create a `.env` file in the root directory of the project based on the `.example.env` provided. This file will store your API keys and database credentials.
-
-```ini
-# .env
-
-# Google Gemini API Key
-GOOGLE_API_KEY=your_gemini_api_key
-
-# MySQL Database Configuration
-SQL_HOST=your_mysql_host # e.g., localhost
-SQL_USER=your_mysql_user
-SQL_PASSWORD=your_mysql_password
-SQL_DATABASE=your_mysql_database_name
-SQL_PORT=3306 # Default MySQL port
-```
-
-Replace the placeholder values with your actual credentials.
-
-### 3. Install Dependencies
-
-The project uses `pip` for dependency management. Install all required packages using the `requirements.txt` file:
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Database Setup
-
-Ensure you have a MySQL database running and accessible with the credentials provided in your `.env` file. The agent will automatically infer the schema from this database.
-
-## Usage
-
-### Running the Streamlit Application
-
-To start the web interface, navigate to the project root directory in your terminal and run:
-
-```bash
-streamlit run app.py
-```
-
-This will open the Streamlit application in your web browser (usually at `http://localhost:8501`).
-
-### Interacting with the Agent
-
-1.  **Ask a Question**: Type your natural language question about your database into the input box at the bottom of the Streamlit interface.
-2.  **View Results**: The application will display the answer in the "Answer" tab.
-3.  **Inspect SQL**: The "SQL Query & Results" tab will show the SQL query that was executed and the raw data returned from the database.
-4.  **Review Information**: If the initial SQL query failed and was subsequently reviewed and corrected, a "Review Info" tab will appear, providing details on the review and the corrected query.
+1. The user types a plain-English question in the browser.
+2. The backend fetches the database schema (tables, columns, sample rows) and passes it to Gemini to generate a SQL query.
+3. The query is executed. Only `SELECT` and `WITH` (CTE) statements are permitted — write operations are blocked at the code level.
+4. If execution succeeds, the results are sent back to Gemini to produce a conversational answer.
+5. If execution fails (e.g. a hallucinated table name), Gemini reviews the broken query and suggests a correction. The corrected query is then executed and the answer generated from those results.
+6. The browser displays the natural-language answer, the SQL query that ran, a results table, and — if a correction was needed — the review details.
 
 ## Project Structure
 
-- `sql_agent.py`: Contains the core logic for natural language processing, SQL generation, database interaction, and SQL query review.
-- `app.py`: The Streamlit application that provides the web-based user interface.
-- `requirements.txt`: Lists all Python dependencies required for the project.
-- `.env`: (Not committed) Stores sensitive environment variables like API keys and database credentials.
-- `.example.env`: A template for the `.env` file.
+```
+sql_agent/
+├── backend/
+│   ├── app/
+│   │   ├── api/routes.py        # HTTP endpoints
+│   │   ├── core/config.py       # Settings (pydantic-settings)
+│   │   ├── db/session.py        # DB connection + schema extraction
+│   │   └── services/
+│   │       └── sql_agent.py     # LLM + query orchestration
+│   ├── tests/                   # pytest test suite
+│   ├── main.py                  # FastAPI app factory
+│   ├── requirements.txt
+│   └── requirements-test.txt
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx
+│   │   └── main.jsx
+│   ├── index.html
+│   └── package.json
+├── docker-compose.yml
+├── init.sql                     # Database seed run on first start
+└── .example.env
+```
+
+## Setup
+
+### Prerequisites
+
+- Docker and the `docker compose` plugin
+- A Google Gemini API key
+
+### 1. Environment Variables
+
+Copy `.example.env` to `.env` and fill in your values:
+
+```ini
+GOOGLE_API_KEY=your_gemini_api_key
+SQL_HOST=db
+SQL_USER=your_mysql_user
+SQL_PASSWORD=your_mysql_password
+SQL_DATABASE=your_database_name
+SQL_PORT=3306
+```
+
+> When running with Docker Compose, set `SQL_HOST=db` to use the MySQL container hostname.
+
+### 2. Run with Docker Compose
+
+```bash
+docker compose up --build
+```
+
+This starts all three services. The MySQL container must pass its healthcheck before the backend starts. On first run, `init.sql` is executed to create and seed the database.
+
+| Service | URL |
+| :--- | :--- |
+| Frontend | http://localhost:5174 |
+| Backend API | http://localhost:8002 |
+
+### 3. Manual Setup (without Docker)
+
+**Backend:**
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+**Frontend:**
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+When running manually, point `SQL_HOST` at your MySQL instance and set `VITE_API_URL=http://localhost:8000/api` in your environment before starting the frontend.
+
+## API Endpoints
+
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/ask` | Submit a question: `{"question": "..."}` |
+| `GET` | `/api/schema` | Returns the current database schema |
+| `GET` | `/api/health` | Health check |
+
+## Running Tests
+
+```bash
+cd backend
+uv venv && uv pip install -r requirements.txt -r requirements-test.txt
+.venv/bin/python -m pytest tests/ -v
+```
