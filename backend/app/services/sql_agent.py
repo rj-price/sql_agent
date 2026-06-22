@@ -1,12 +1,18 @@
+import datetime
+import decimal
 import google.generativeai as genai
 import json
 import logging
+import mysql.connector
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from app.core.config import settings
 from app.db.session import get_db_connection, get_schema_info
 
 logger = logging.getLogger(__name__)
+
+_MAX_ROWS = 1000
+
 
 @dataclass
 class QueryResult:
@@ -16,10 +22,12 @@ class QueryResult:
     success: bool
     error_message: Optional[str] = None
 
+
 @dataclass
 class SQLReview:
     review_text: str
     corrected_query: Optional[str] = None
+
 
 @dataclass
 class AgentResponse:
@@ -27,8 +35,9 @@ class AgentResponse:
     query_result: QueryResult
     review: Optional[SQLReview] = None
 
+
 GENERATE_SQL_PROMPT = """
-You are an expert SQL query generator. Given a natural language question and database schema, 
+You are an expert SQL query generator. Given a natural language question and database schema,
 generate a precise SQL query that answers the question.
 
 Database Schema:
@@ -81,17 +90,32 @@ Instructions:
 Natural Language Response:
 """
 
+
+def _serialize_row(row: dict) -> dict:
+    result = {}
+    for k, v in row.items():
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            result[k] = v.isoformat()
+        elif isinstance(v, decimal.Decimal):
+            result[k] = float(v)
+        elif isinstance(v, bytes):
+            result[k] = v.decode("utf-8", errors="replace")
+        else:
+            result[k] = v
+    return result
+
+
 class NaturalLanguageToSQL:
     def __init__(self):
         genai.configure(api_key=settings.GOOGLE_API_KEY)
         self.model = genai.GenerativeModel("gemini-2.5-flash")
-        self.connection = None
-        self.schema_info = self._get_schema()
+        self._schema_info: Optional[str] = None
 
-    def _get_schema(self):
-        if self.connection is None:
-            self.connection = get_db_connection()
-        return get_schema_info(self.connection)
+    @property
+    def schema_info(self) -> str:
+        if self._schema_info is None:
+            self._schema_info = get_schema_info()
+        return self._schema_info
 
     def _generate_sql_query(self, question: str) -> str:
         prompt = GENERATE_SQL_PROMPT.format(
@@ -111,24 +135,45 @@ class NaturalLanguageToSQL:
             raise
 
     def _execute_sql_query(self, sql_query: str) -> QueryResult:
-        cursor = self.connection.cursor(dictionary=True)
-        try:
-            cursor.execute(sql_query)
-            data = cursor.fetchall()
-            column_names = list(data[0].keys()) if data else []
-            return QueryResult(
-                sql_query=sql_query, data=data, column_names=column_names, success=True
-            )
-        except Exception as err:
+        first_word = sql_query.strip().split()[0].upper() if sql_query.strip() else ""
+        if first_word not in ("SELECT", "WITH"):
             return QueryResult(
                 sql_query=sql_query,
                 data=[],
                 column_names=[],
                 success=False,
-                error_message=str(err),
+                error_message="Only SELECT queries are permitted.",
             )
+
+        connection = get_db_connection()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            try:
+                cursor.execute(sql_query)
+                data = cursor.fetchmany(_MAX_ROWS)
+                column_names = list(data[0].keys()) if data else []
+                return QueryResult(
+                    sql_query=sql_query,
+                    data=[_serialize_row(row) for row in data],
+                    column_names=column_names,
+                    success=True,
+                )
+            except mysql.connector.errors.OperationalError:
+                raise
+            except mysql.connector.errors.InterfaceError:
+                raise
+            except Exception as err:
+                return QueryResult(
+                    sql_query=sql_query,
+                    data=[],
+                    column_names=[],
+                    success=False,
+                    error_message=str(err),
+                )
+            finally:
+                cursor.close()
         finally:
-            cursor.close()
+            connection.close()
 
     def _review_sql_query(self, sql_query: str) -> SQLReview:
         review_prompt = REVIEW_SQL_PROMPT.format(sql_query=sql_query)
@@ -156,23 +201,23 @@ class NaturalLanguageToSQL:
             return f"Error: {query_result.error_message}"
         if not query_result.data:
             return "No results found."
-        
+
         data_summary = {
             "total_rows": len(query_result.data),
             "columns": query_result.column_names,
             "sample_data": query_result.data[:10],
             "has_more_data": len(query_result.data) > 10,
         }
-        
+
         review_info = f"SQL Query Review:\n{review_text}\n\n" if review_text else ""
-        
+
         prompt = NATURAL_LANGUAGE_RESPONSE_PROMPT.format(
             question=question,
             sql_query=query_result.sql_query,
             review_info=review_info,
             data_summary=json.dumps(data_summary, indent=2, default=str),
         )
-        
+
         try:
             response = self.model.generate_content(prompt)
             return response.text.strip()
@@ -191,26 +236,22 @@ class NaturalLanguageToSQL:
                 review = self._review_sql_query(sql_query)
                 if review.corrected_query:
                     final_result = self._execute_sql_query(review.corrected_query)
-            
+
             answer = self._format_response(
-                question, 
-                final_result, 
-                review.review_text if review else None
+                question,
+                final_result,
+                review.review_text if review else None,
             )
-            
+
             return AgentResponse(
                 natural_language_answer=answer,
                 query_result=final_result,
-                review=review
+                review=review,
             )
         except Exception as e:
             logger.error(f"Error processing question: {e}")
             return AgentResponse(
                 natural_language_answer=str(e),
                 query_result=QueryResult("", [], [], False, str(e)),
-                review=None
+                review=None,
             )
-            
-    def close(self):
-        if self.connection:
-            self.connection.close()

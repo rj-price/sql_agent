@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 
-const API_URL = 'http://192.168.1.100:8002/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.100:8002/api';
 
 function App() {
   const [question, setQuestion] = useState('');

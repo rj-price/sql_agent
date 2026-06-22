@@ -5,6 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
@@ -19,7 +20,9 @@ def get_db_connection():
         logger.error(f"Error connecting to MySQL: {e}")
         raise
 
-def get_schema_info(connection):
+
+def get_schema_info() -> str:
+    connection = get_db_connection()
     schema_info = []
     cursor = connection.cursor()
     try:
@@ -27,14 +30,14 @@ def get_schema_info(connection):
         tables = cursor.fetchall()
         for (table_name,) in tables:
             schema_info.append(f"\nTable: {table_name}")
-            cursor.execute(f"DESCRIBE {table_name}")
+            cursor.execute(f"DESCRIBE `{table_name}`")
             columns = cursor.fetchall()
             for column in columns:
                 col_name, col_type, null, key, default, extra = column
                 schema_info.append(
                     f"  - {col_name}: {col_type} {'(Primary Key)' if key == 'PRI' else ''}"
                 )
-            cursor.execute(f"SELECT * FROM {table_name} LIMIT 3")
+            cursor.execute(f"SELECT * FROM `{table_name}` LIMIT 3")
             sample_data = cursor.fetchall()
             if sample_data:
                 schema_info.append("  Sample data:")
@@ -44,4 +47,5 @@ def get_schema_info(connection):
         logger.error(f"Error getting schema: {err}")
     finally:
         cursor.close()
+        connection.close()
     return "\n".join(schema_info)
