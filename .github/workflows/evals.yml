@@ -1,0 +1,79 @@
+name: evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so drift on the pinned Gemini model is caught without waiting for a push
+    - cron: "0 6 * * 1"
+
+jobs:
+  tests:
+    name: Unit and harness tests (offline)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-test.txt
+      - run: pytest -q
+
+  suite:
+    name: Execution-accuracy suite (billed)
+    runs-on: ubuntu-latest
+    # Costs real API calls, so pull requests only get the offline job
+    if: github.event_name != 'pull_request'
+    needs: tests
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: testpass
+          MYSQL_DATABASE: test_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -ptestpass"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Load the fixture database
+        run: mysql -h 127.0.0.1 -uroot -ptestpass test_db < ../init.sql
+      - name: Score against the bar
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          SQL_HOST: 127.0.0.1
+          SQL_USER: root
+          SQL_PASSWORD: testpass
+          SQL_DATABASE: test_db
+        run: |
+          set -o pipefail
+          if [ -z "$GOOGLE_API_KEY" ]; then
+            echo "::warning::GOOGLE_API_KEY is not set; skipping the billed suite."
+            exit 0
+          fi
+          python -m evals.runner --check --min-accuracy 0.8 --results-dir evals/results | tee eval-report.md
+      - name: Publish the scores to the job summary
+        if: always()
+        run: cat eval-report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: backend/evals/results/*.json
+          if-no-files-found: ignore

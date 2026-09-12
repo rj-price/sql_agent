@@ -4,3 +4,4 @@ mysql-connector-python==9.3.0
 google-generativeai==0.8.4
 python-dotenv==1.0.1
 pydantic-settings==2.5.2
+langfuse>=4,<5
