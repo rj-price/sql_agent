@@ -1,6 +1,5 @@
 import datetime
 import decimal
-import google.generativeai as genai
 import json
 import logging
 import mysql.connector
@@ -8,11 +7,11 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from app.core.config import settings
 from app.db.session import get_db_connection, get_schema_info
+from app.services.openrouter import OpenRouterChat
 
 logger = logging.getLogger(__name__)
 
 _MAX_ROWS = 1000
-_MODEL_ID = "gemini-2.5-flash"
 
 _langfuse = None  # False once we know tracing is off
 
@@ -129,30 +128,26 @@ def _serialize_row(row: dict) -> dict:
 
 class NaturalLanguageToSQL:
     def __init__(self):
-        genai.configure(api_key=settings.GOOGLE_API_KEY)
-        self.model = genai.GenerativeModel(_MODEL_ID)
+        self.model = OpenRouterChat(settings.OPENROUTER_API_KEY, settings.LLM_MODEL)
         self._schema_info: Optional[str] = None
 
     def _generate(self, name: str, prompt: str):
         """Calls the model, recording a Langfuse generation when tracing is on."""
         langfuse = _get_langfuse()
         if langfuse is None:
-            return self.model.generate_content(prompt)
+            return self.model.complete(prompt)
         with langfuse.start_as_current_observation(
-            as_type="generation", name=name, model=_MODEL_ID, input=prompt
+            as_type="generation", name=name, model=settings.LLM_MODEL, input=prompt
         ) as generation:
             try:
-                response = self.model.generate_content(prompt)
+                response = self.model.complete(prompt)
             except Exception as e:
                 generation.update(level="ERROR", status_message=str(e))
                 raise
-            usage = getattr(response, "usage_metadata", None)
             generation.update(
                 output=response.text,
-                usage_details={
-                    "input": getattr(usage, "prompt_token_count", 0) or 0,
-                    "output": getattr(usage, "candidates_token_count", 0) or 0,
-                },
+                model=response.model,
+                usage_details={"input": response.input_tokens, "output": response.output_tokens},
             )
             return response
 

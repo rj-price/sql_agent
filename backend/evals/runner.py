@@ -6,7 +6,7 @@ rows passes. Scoring is deterministic: no model grades another model.
 
     python -m evals.runner --check --min-accuracy 0.8 --results-dir evals/results
 
-Needs GOOGLE_API_KEY and the SQL_* settings pointing at a database loaded with
+Needs OPENROUTER_API_KEY and the SQL_* settings pointing at a database loaded with
 ../init.sql. Exit status is 1 when --check is given and accuracy is below the bar.
 """
 

@@ -6,7 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # Weekly, so drift on the pinned Gemini model is caught without waiting for a push
+    # Weekly, so drift on the pinned model is caught without waiting for a push
     - cron: "0 6 * * 1"
 
 jobs:
@@ -56,15 +56,15 @@ jobs:
         run: mysql -h 127.0.0.1 -uroot -ptestpass test_db < ../init.sql
       - name: Score against the bar
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           SQL_HOST: 127.0.0.1
           SQL_USER: root
           SQL_PASSWORD: testpass
           SQL_DATABASE: test_db
         run: |
           set -o pipefail
-          if [ -z "$GOOGLE_API_KEY" ]; then
-            echo "::warning::GOOGLE_API_KEY is not set; skipping the billed suite."
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY is not set; skipping the billed suite."
             exit 0
           fi
           python -m evals.runner --check --min-accuracy 0.8 --results-dir evals/results | tee eval-report.md
