@@ -159,7 +159,7 @@ class TestGenerateSQLQuery:
     def _llm_returns(self, mock_model, text):
         resp = MagicMock()
         resp.text = text
-        mock_model.generate_content.return_value = resp
+        mock_model.complete.return_value = resp
 
     def test_returns_bare_sql(self, agent, mock_model):
         self._llm_returns(mock_model, "SELECT * FROM users")
@@ -180,7 +180,7 @@ class TestGenerateSQLQuery:
     def test_includes_schema_in_prompt(self, agent, mock_model):
         self._llm_returns(mock_model, "SELECT 1")
         agent._generate_sql_query("test question")
-        prompt = mock_model.generate_content.call_args[0][0]
+        prompt = mock_model.complete.call_args[0][0]
         assert "Table: users" in prompt
 
 
@@ -191,7 +191,7 @@ class TestReviewSQLQuery:
     def _llm_returns(self, mock_model, text):
         resp = MagicMock()
         resp.text = text
-        mock_model.generate_content.return_value = resp
+        mock_model.complete.return_value = resp
 
     def test_parses_json_review_and_null_corrected(self, agent, mock_model):
         self._llm_returns(mock_model, '{"review": "Looks fine.", "corrected_query": null}')
@@ -216,7 +216,7 @@ class TestReviewSQLQuery:
         assert result.corrected_query is None
 
     def test_returns_error_review_on_llm_exception(self, agent, mock_model):
-        mock_model.generate_content.side_effect = RuntimeError("quota exceeded")
+        mock_model.complete.side_effect = RuntimeError("quota exceeded")
         result = agent._review_sql_query("SELECT 1")
         assert "Error" in result.review_text
         assert result.corrected_query is None
@@ -227,20 +227,20 @@ class TestReviewSQLQuery:
 class TestLazySchemaInit:
 
     def test_init_does_not_call_get_schema_info(self):
-        with patch("app.services.sql_agent.genai"):
+        with patch("app.services.sql_agent.OpenRouterChat"):
             with patch("app.services.sql_agent.get_schema_info") as mock_schema:
                 NaturalLanguageToSQL()
                 mock_schema.assert_not_called()
 
     def test_schema_property_loads_on_first_access(self):
-        with patch("app.services.sql_agent.genai"):
+        with patch("app.services.sql_agent.OpenRouterChat"):
             with patch("app.services.sql_agent.get_schema_info", return_value="schema") as mock_schema:
                 a = NaturalLanguageToSQL()
                 _ = a.schema_info
                 mock_schema.assert_called_once()
 
     def test_schema_property_cached_after_first_access(self):
-        with patch("app.services.sql_agent.genai"):
+        with patch("app.services.sql_agent.OpenRouterChat"):
             with patch("app.services.sql_agent.get_schema_info", return_value="schema") as mock_schema:
                 a = NaturalLanguageToSQL()
                 _ = a.schema_info
@@ -248,7 +248,7 @@ class TestLazySchemaInit:
                 mock_schema.assert_called_once()
 
     def test_schema_property_returns_value_from_get_schema_info(self):
-        with patch("app.services.sql_agent.genai"):
+        with patch("app.services.sql_agent.OpenRouterChat"):
             with patch("app.services.sql_agent.get_schema_info", return_value="Table: foo"):
                 a = NaturalLanguageToSQL()
                 assert a.schema_info == "Table: foo"
@@ -262,7 +262,7 @@ class TestAskQuestion:
         responses = [MagicMock() for _ in texts]
         for r, t in zip(responses, texts):
             r.text = t
-        mock_model.generate_content.side_effect = responses
+        mock_model.complete.side_effect = responses
 
     def test_happy_path_returns_answer(self, agent, mock_model):
         self._resp(mock_model, "SELECT COUNT(*) FROM users", "There are 2 users.")
@@ -278,7 +278,7 @@ class TestAskQuestion:
         conn = _ok_conn([{"1": 1}])
         with patch("app.services.sql_agent.get_db_connection", return_value=conn):
             agent.ask_question("test")
-        assert mock_model.generate_content.call_count == 2
+        assert mock_model.complete.call_count == 2
 
     def test_sql_failure_triggers_review(self, agent, mock_model):
         self._resp(
@@ -302,7 +302,7 @@ class TestAskQuestion:
         assert result.review.review_text == "Wrong table."
         assert result.review.corrected_query == "SELECT * FROM users"
         assert result.query_result.success is True
-        assert mock_model.generate_content.call_count == 3
+        assert mock_model.complete.call_count == 3
 
     def test_no_corrected_query_skips_second_db_call(self, agent, mock_model):
         self._resp(
@@ -316,7 +316,7 @@ class TestAskQuestion:
 
         assert result.review.corrected_query is None
         assert result.query_result.success is False
-        assert mock_model.generate_content.call_count == 2
+        assert mock_model.complete.call_count == 2
 
     def test_connection_error_not_reviewed(self, agent, mock_model):
         """OperationalError must propagate to the outer except — not trigger LLM review."""
@@ -325,7 +325,7 @@ class TestAskQuestion:
         with patch("app.services.sql_agent.get_db_connection", return_value=conn):
             result = agent.ask_question("show users")
 
-        assert mock_model.generate_content.call_count == 1
+        assert mock_model.complete.call_count == 1
         assert "server gone away" in result.natural_language_answer
 
     def test_empty_result_returns_no_results_message(self, agent, mock_model):
@@ -336,8 +336,46 @@ class TestAskQuestion:
         assert result.natural_language_answer == "No results found."
 
     def test_returns_agent_response_on_unexpected_exception(self, agent, mock_model):
-        mock_model.generate_content.side_effect = RuntimeError("quota exceeded")
+        mock_model.complete.side_effect = RuntimeError("quota exceeded")
         result = agent.ask_question("show users")
         assert isinstance(result.natural_language_answer, str)
         assert "quota exceeded" in result.natural_language_answer
         assert result.query_result.success is False
+
+
+# ── OpenRouter client ─────────────────────────────────────────────────────────
+
+class TestOpenRouterChat:
+
+    def _client(self, handler):
+        import httpx
+        from app.services.openrouter import OpenRouterChat
+        chat = OpenRouterChat("key", "google/gemini-2.5-flash")
+        chat._client = httpx.Client(transport=httpx.MockTransport(handler))
+        return chat
+
+    def test_returns_text_model_and_usage(self):
+        import httpx, json as _json
+        seen = {}
+
+        def handler(request):
+            seen["body"] = _json.loads(request.content)
+            return httpx.Response(200, json={
+                "model": "google/gemini-2.5-flash",
+                "choices": [{"message": {"content": "SELECT 1"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+            })
+
+        result = self._client(handler).complete("q")
+        assert seen["body"]["messages"] == [{"role": "user", "content": "q"}]
+        assert (result.text, result.input_tokens, result.output_tokens) == ("SELECT 1", 12, 3)
+
+    def test_http_error_raises(self):
+        import httpx
+        with pytest.raises(RuntimeError, match="402"):
+            self._client(lambda r: httpx.Response(402, text="no credit")).complete("q")
+
+    def test_empty_content_raises(self):
+        import httpx
+        with pytest.raises(RuntimeError, match="no content"):
+            self._client(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})).complete("q")

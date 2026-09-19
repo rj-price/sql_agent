@@ -1,6 +1,5 @@
 import datetime
 import decimal
-import google.generativeai as genai
 import json
 import logging
 import mysql.connector
@@ -8,10 +7,32 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from app.core.config import settings
 from app.db.session import get_db_connection, get_schema_info
+from app.services.openrouter import OpenRouterChat
 
 logger = logging.getLogger(__name__)
 
 _MAX_ROWS = 1000
+
+_langfuse = None  # False once we know tracing is off
+
+
+def _get_langfuse():
+    """Returns a Langfuse client when LANGFUSE_PUBLIC_KEY/SECRET_KEY are set, otherwise None."""
+    global _langfuse
+    if _langfuse is None:
+        _langfuse = False
+        if settings.LANGFUSE_PUBLIC_KEY and settings.LANGFUSE_SECRET_KEY:
+            try:
+                from langfuse import Langfuse
+                _langfuse = Langfuse(
+                    public_key=settings.LANGFUSE_PUBLIC_KEY,
+                    secret_key=settings.LANGFUSE_SECRET_KEY,
+                    base_url=settings.LANGFUSE_HOST,
+                )
+                logger.info("Langfuse tracing enabled")
+            except ImportError:
+                logger.warning("langfuse package not installed; tracing disabled")
+    return _langfuse or None
 
 
 @dataclass
@@ -107,9 +128,28 @@ def _serialize_row(row: dict) -> dict:
 
 class NaturalLanguageToSQL:
     def __init__(self):
-        genai.configure(api_key=settings.GOOGLE_API_KEY)
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.model = OpenRouterChat(settings.OPENROUTER_API_KEY, settings.LLM_MODEL)
         self._schema_info: Optional[str] = None
+
+    def _generate(self, name: str, prompt: str):
+        """Calls the model, recording a Langfuse generation when tracing is on."""
+        langfuse = _get_langfuse()
+        if langfuse is None:
+            return self.model.complete(prompt)
+        with langfuse.start_as_current_observation(
+            as_type="generation", name=name, model=settings.LLM_MODEL, input=prompt
+        ) as generation:
+            try:
+                response = self.model.complete(prompt)
+            except Exception as e:
+                generation.update(level="ERROR", status_message=str(e))
+                raise
+            generation.update(
+                output=response.text,
+                model=response.model,
+                usage_details={"input": response.input_tokens, "output": response.output_tokens},
+            )
+            return response
 
     @property
     def schema_info(self) -> str:
@@ -123,7 +163,7 @@ class NaturalLanguageToSQL:
             natural_language_question=question,
         )
         try:
-            response = self.model.generate_content(prompt)
+            response = self._generate("generate_sql", prompt)
             sql_query = response.text.strip()
             if sql_query.startswith("```sql"):
                 sql_query = sql_query[6:]
@@ -178,7 +218,7 @@ class NaturalLanguageToSQL:
     def _review_sql_query(self, sql_query: str) -> SQLReview:
         review_prompt = REVIEW_SQL_PROMPT.format(sql_query=sql_query)
         try:
-            response = self.model.generate_content(review_prompt)
+            response = self._generate("review_sql", review_prompt)
             response_text = response.text.strip()
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
@@ -219,7 +259,7 @@ class NaturalLanguageToSQL:
         )
 
         try:
-            response = self.model.generate_content(prompt)
+            response = self._generate("format_response", prompt)
             return response.text.strip()
         except Exception as e:
             logger.error(f"Error formatting response: {e}")

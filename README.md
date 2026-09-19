@@ -9,7 +9,7 @@ A full-stack web application that translates natural language questions into SQL
 | Frontend | React + Vite |
 | Backend | FastAPI (Python) |
 | Database | MySQL 8 |
-| LLM | Google Gemini 2.5 Flash |
+| LLM | Google Gemini 2.5 Flash via OpenRouter (`LLM_MODEL`) |
 
 ```
 ┌───────────────┐       ┌─────────────────┐       ┌──────────┐
@@ -62,14 +62,15 @@ sql_agent/
 ### Prerequisites
 
 - Docker and the `docker compose` plugin
-- A Google Gemini API key
+- An OpenRouter API key
 
 ### 1. Environment Variables
 
 Copy `.example.env` to `.env` and fill in your values:
 
 ```ini
-GOOGLE_API_KEY=your_gemini_api_key
+OPENROUTER_API_KEY=sk-or-v1-...
+LLM_MODEL=google/gemini-2.5-flash
 SQL_HOST=db
 SQL_USER=your_mysql_user
 SQL_PASSWORD=your_mysql_password
